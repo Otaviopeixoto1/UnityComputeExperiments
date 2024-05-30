@@ -1,12 +1,10 @@
-using System.Collections;
-using System.Collections.Generic;
 using Unity.Mathematics;
-using Unity.VisualScripting;
 using UnityEngine;
 
 public class TerrainGenerator : MonoBehaviour
 {
-    const int chunkSize = 33; //(including "phantom cells" necessary for the unique vert generation scheme)
+    const int chunkSize = 33;   //(including "border cells" necessary for the unique vert generation scheme)
+                                //For this implementation we must have: (chunkSize * chunkSize * chunkSize) < MAX = 1024 * 1024 
     const int densityDim = chunkSize + 1;
     [SerializeField] private bool densityGizmos = false;
     [SerializeField] private ComputeShader densityGenShader;
@@ -33,6 +31,7 @@ public class TerrainGenerator : MonoBehaviour
     private int maximumCellIds;
 
     private Mesh triangleMesh;
+    private RenderParams renderParams;
 
     private static readonly int 
         chunkSizeID = Shader.PropertyToID("chunkSize"),
@@ -126,7 +125,8 @@ public class TerrainGenerator : MonoBehaviour
 
         indirectDrawBuffer = new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, 1, GraphicsBuffer.IndirectDrawIndexedArgs.size);
         GraphicsBuffer.IndirectDrawIndexedArgs[] indirectDrawData = new GraphicsBuffer.IndirectDrawIndexedArgs[1];
-        /* For RenderPrimitivesIndexedIndirect:
+
+        /* For RenderPrimitivesIndexedIndirect (DOESNT WORK): 
         indirectDrawData[0].indexCountPerInstance = 0;
         indirectDrawData[0].baseVertexIndex = 0;
         indirectDrawData[0].startIndex = 0;
@@ -158,27 +158,26 @@ public class TerrainGenerator : MonoBehaviour
         GenerateDensity();
 
         MCUpdate();
+
+
+        //terrainMaterial.SetBuffer("vertexBuffer", vertexBuffer);
+        //terrainMaterial.SetBuffer("indexBuffer", indexBuffer);
         
-    
+        renderParams = new RenderParams(terrainMaterial);
+        renderParams.worldBounds = new Bounds(Vector3.zero, 6400*Vector3.one); // use tighter bounds
+        renderParams.matProps = new MaterialPropertyBlock();
+        renderParams.matProps.SetBuffer("vertexBuffer", vertexBuffer);
+        renderParams.matProps.SetBuffer("indexBuffer", indexBuffer);
     }
 
 
     void Update()
     {
-        //terrainMaterial.SetBuffer("vertexBuffer", vertexBuffer);
-        //terrainMaterial.SetBuffer("indexBuffer", indexBuffer);
-        RenderParams rp = new RenderParams(terrainMaterial);
-        rp.worldBounds = new Bounds(Vector3.zero, 6400*Vector3.one); // use tighter bounds
-        rp.matProps = new MaterialPropertyBlock();
-        rp.matProps.SetBuffer("vertexBuffer", vertexBuffer);
-        rp.matProps.SetBuffer("indexBuffer", indexBuffer);
-
         //DOESNT WORK:
         //Graphics.RenderPrimitivesIndexedIndirect(rp, MeshTopology.Triangles, indexBuffer, indirectDrawBuffer, 1);
 
         //HACK:
-        Graphics.RenderMeshIndirect(rp, triangleMesh, indirectDrawBuffer);
-
+        Graphics.RenderMeshIndirect(renderParams, triangleMesh, indirectDrawBuffer);
     }
 
     private void OnDestroy() 
@@ -201,7 +200,6 @@ public class TerrainGenerator : MonoBehaviour
     private void GenerateDensity()
     {
         int dispatchDim = Mathf.CeilToInt(densityDim/8.0f);
-        //Debug.Log(dispatchDim);
         densityGenShader.SetInt(totalCellsID, densityCellCount);
         densityGenShader.SetInt(chunkSizeID, chunkSize);
         densityGenShader.SetBuffer(0, densityVolOutID, densityBuffer); 
@@ -273,13 +271,14 @@ public class TerrainGenerator : MonoBehaviour
             Debug.Log("("+ offsets[2*i] +","+ offsets[2*i+1]  +")");
         }*/
 
+        /*
         GraphicsBuffer.IndirectDrawIndexedArgs[] indirectDrawData2 = new GraphicsBuffer.IndirectDrawIndexedArgs[1];
         indirectDrawBuffer.GetData(indirectDrawData2);
         Debug.Log("index count: " +  indirectDrawData2[0].indexCountPerInstance);
         Debug.Log("instance count: " +  indirectDrawData2[0].instanceCount);
         Debug.Log("startIndex: " +  indirectDrawData2[0].startIndex);
         Debug.Log("startInstance: " +  indirectDrawData2[0].startInstance);
-        Debug.Log("baseVertexIndex: " +  indirectDrawData2[0].baseVertexIndex);
+        Debug.Log("baseVertexIndex: " +  indirectDrawData2[0].baseVertexIndex);*/
 
 
         // 4) Generate verts and index buffer:

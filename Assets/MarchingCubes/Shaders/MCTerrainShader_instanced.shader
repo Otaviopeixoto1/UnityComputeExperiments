@@ -88,7 +88,8 @@ Shader "Custom/InstancedMC"
                 Vert vert = vertexBuffer[id];
 
                 o.positionWS = float4(vert.position.xyz, 1.0f);
-                o.color = float4(1,0,0,1);
+                o.normal = vert.normal.xyz;
+                o.color = float4((vert.normal.xyz + 1.0f)*0.5f, 1.0f);
                 o.positionCS = mul(UNITY_MATRIX_VP, o.positionWS);
 
                 return o;
@@ -97,8 +98,14 @@ Shader "Custom/InstancedMC"
             half4 frag (Interpolators i) : SV_Target
             {
                 half4 color =  i.color;
+                
+                Light mainLight = GetMainLight();
 
+                float3 L = mainLight.direction;
+                float diff = saturate(0.5f*(dot(i.normal, L) + 1));
 
+                color *= diff;
+                
                 // FOR SAMPLING SHADOWMAP:
                 //float4 shadowCoord = TransformWorldToShadowCoord(i.positionWS.xyz);
                 //Light mainLight = GetMainLight(shadowCoord);

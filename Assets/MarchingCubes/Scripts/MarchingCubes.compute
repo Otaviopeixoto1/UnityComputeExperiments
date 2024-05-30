@@ -159,6 +159,16 @@ void GenerateVertex(uint3 cellPosition, uint edgeNum, int totalOffset)
     //output.position.xyz  = wsCoord.xyz;
     vertexBuffer[totalOffset].position.xyzw = float4(wsCoord.xyz,1);
     //vertexBuffer[totalOffset] = output;
+
+    uint2 offs = uint2(1,0);
+    float4 grad;
+    grad.w = densityVolumeIn[getCellCornerID(cellPosition + offs.yyy)];
+    grad.x = densityVolumeIn[getCellCornerID(cellPosition + offs.xyy)] - grad.w;
+    grad.y = densityVolumeIn[getCellCornerID(cellPosition + offs.yxy)] - grad.w;
+    grad.z = densityVolumeIn[getCellCornerID(cellPosition + offs.yyx)] - grad.w;
+    grad.xyz = normalize(grad.xyz);
+
+    vertexBuffer[totalOffset].normal.xyzw = grad;
 }
 
 /**/

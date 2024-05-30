@@ -1,5 +1,7 @@
 // Each #kernel tells which function to compile; you can have many kernels
 #pragma kernel GenDensity
+ 
+#include "NoiseLibrary/ashima/classicnoise3D.hlsl"
 
 //RWTexture2D<float4> Result; //maybe use this
 RWStructuredBuffer<float> densityVolumeOut;
@@ -7,6 +9,9 @@ RWStructuredBuffer<float> densityVolumeOut;
 uint totalCells;
 uint chunkSize;
 float scale;
+
+//use for offseting the noise and tile the chunk in a seamless way
+float3 chunkCoord;
 
 uint getCellCornerID(uint3 coord) 
 {
@@ -20,7 +25,17 @@ void GenDensity (uint3 id : SV_DispatchThreadID)
     if (max(max(id.x, id.y), id.z) < (chunkSize + 1))
     {
         uint cellID = getCellCornerID(id);
-        densityVolumeOut[cellID] = ((float)id.y - 16.0f)/17.0f;
+
+        //Plane:
+        //densityVolumeOut[cellID] = ((float)id.y - 16.0f)/17.0f;
+
+        //Noise:
+        densityVolumeOut[cellID]  = 1.00f * ((((float)id.y - 16.0f)/17.0f) - cnoise(float3(id)/6.0f) );
+        densityVolumeOut[cellID] += 0.50f * ((((float)id.y - 16.0f)/17.0f) - cnoise(float3(id)/3.1f) );
+        densityVolumeOut[cellID] += 0.25f * ((((float)id.y - 16.0f)/17.0f) - cnoise(float3(id)/1.52f) );
+
+        //Sphere:
+        //densityVolumeOut[cellID] = (sqrt( ((float)id.x - 16.0f) * ((float)id.x - 16.0f) + ((float)id.y - 16.0f) * ((float)id.y - 16.0f) + ((float)id.z - 16.0f) * ((float)id.z - 16.0f)) - 8.0f)/20.0f;
     }
     
 }
