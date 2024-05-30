@@ -1,0 +1,181 @@
+#pragma kernel ClearSums 
+#pragma kernel PrefixSum 
+#pragma kernel SumBlocks
+#pragma kernel AddSums 
+
+#define THREAD_GROUP_SIZE 512
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Same Scan algo as the one on Assets/Scripts/GPUBoids/PrefixSumScan.compute but specifically tuned for 
+// indirect drawing for the marching cubes algorithm
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+struct IndirectDrawIndexedArgs
+{
+    uint indexCountPerInstance;
+    uint instanceCount;
+    uint startIndex;
+    uint baseVertexIndex; 
+    uint startInstance;
+};
+
+uint blockCount;
+
+RWStructuredBuffer<uint2> offsetBuffer;
+StructuredBuffer<uint2> sumsBufferIn;
+RWStructuredBuffer<uint2> sumsBufferOut;
+
+RWStructuredBuffer<IndirectDrawIndexedArgs> indirectArgsBuffer;
+
+
+[numthreads(THREAD_GROUP_SIZE, 1, 1)]
+void ClearSums (uint3 id : SV_DispatchThreadID)
+{
+    sumsBufferOut[id.x] = uint2(0,0);
+}
+
+
+// WE ASSUME THAT THE INPUT ARRAY WILL HAVE A SIZE THAT IS A MULTIPLE OF 2 * THREAD_GROUP_SIZE 
+// EVEN IF THIS RANGE IS NOT TOTALLY USED. THIS AVOIDS TOO MANY CONDITIONAL STATEMENTS ON SHADER
+groupshared uint2 temp[2 * THREAD_GROUP_SIZE];
+[numthreads(THREAD_GROUP_SIZE, 1, 1)]
+void PrefixSum(uint globalID : SV_DispatchThreadID, uint localID : SV_GROUPTHREADID, uint groupID : SV_GROUPID) 
+{
+    int offset = 1; 
+
+    temp[2*localID] = offsetBuffer[2*globalID]; // load input into shared memory 
+    temp[2*localID+1] = offsetBuffer[2*globalID+1]; 
+
+    [unroll]
+    for (uint dUp = THREAD_GROUP_SIZE; dUp > 0; dUp >>= 1) // Upsweep                   
+    {
+        GroupMemoryBarrierWithGroupSync();
+        if (localID < dUp)   
+        { 
+            int ai = offset*(2*localID+1)-1;     
+            int bi = offset*(2*localID+2)-1; 
+            temp[bi] += temp[ai];    
+        }   
+        offset *= 2;
+    }  
+
+    if (localID == 0) 
+    { 
+        //the last element contains the sum of all elements in the temp array
+        sumsBufferOut[groupID] = temp[2 * THREAD_GROUP_SIZE  - 1];
+        // clear the last element 
+        temp[2 * THREAD_GROUP_SIZE  - 1] = uint2(0,0); 
+    }  
+    
+    [unroll]
+    for (uint dDown = 1; dDown < THREAD_GROUP_SIZE * 2; dDown *= 2) // Downsweep 
+    {      
+        offset >>= 1;      
+        GroupMemoryBarrierWithGroupSync();     
+        if (localID < dDown)      
+        { 
+            int ai = offset*(2*localID+1)-1;     
+            int bi = offset*(2*localID+2)-1; 
+            uint2 t = temp[ai]; 
+            temp[ai] = temp[bi]; 
+            temp[bi] += t;       
+        } 
+    }  
+    GroupMemoryBarrierWithGroupSync(); 
+
+    //Write results to device memory
+
+    offsetBuffer[2*globalID] = temp[2*localID + 1];  
+    
+    if(localID < THREAD_GROUP_SIZE - 1)
+    {
+        offsetBuffer[2*globalID+1] = temp[2*localID + 2]; 
+    }
+    else
+    {
+        offsetBuffer[2*globalID+1] = sumsBufferOut[groupID];
+    }
+
+    
+}
+
+////////////////////////////////////////////////////////////////////////////
+//sum blocks and store index count into an IndirectDrawIndexedArgs buffer
+////////////////////////////////////////////////////////////////////////////
+
+groupshared uint2 tempSum[2 * THREAD_GROUP_SIZE];
+[numthreads(THREAD_GROUP_SIZE, 1, 1)]
+void SumBlocks(uint globalID : SV_DispatchThreadID, uint localID : SV_GROUPTHREADID, uint groupID : SV_GROUPID) 
+{
+    int offset = 1; 
+
+    tempSum[2*localID] = offsetBuffer[2*globalID]; // load input into shared memory 
+    tempSum[2*localID+1] = offsetBuffer[2*globalID+1]; 
+
+    [unroll]
+    for (uint dUp = THREAD_GROUP_SIZE; dUp > 0; dUp >>= 1) // Upsweep                   
+    {
+        GroupMemoryBarrierWithGroupSync();
+        if (localID < dUp)   
+        { 
+            int ai = offset*(2*localID+1)-1;     
+            int bi = offset*(2*localID+2)-1; 
+            tempSum[bi] += tempSum[ai];    
+        }   
+        offset *= 2;
+    }  
+
+    if (localID == 0) 
+    {   
+        // Fill the args buffer:     doesnt work when the max size of the sums buffer is not fully used
+        //indirectArgsBuffer[0].indexCountPerInstance = tempSum[2 * THREAD_GROUP_SIZE  - 1].y;
+        indirectArgsBuffer[0].instanceCount = tempSum[2 * THREAD_GROUP_SIZE  - 1].y;
+
+        // Clear the last element 
+        tempSum[2 * THREAD_GROUP_SIZE  - 1] = uint2(0,0); 
+    }  
+    
+    [unroll]
+    for (uint dDown = 1; dDown < THREAD_GROUP_SIZE * 2; dDown *= 2) // Downsweep 
+    {      
+        offset >>= 1;      
+        GroupMemoryBarrierWithGroupSync();     
+        if (localID < dDown)      
+        { 
+            int ai = offset*(2*localID+1)-1;     
+            int bi = offset*(2*localID+2)-1; 
+            uint2 t = tempSum[ai]; 
+            tempSum[ai] = tempSum[bi]; 
+            tempSum[bi] += t;       
+        } 
+    }  
+    GroupMemoryBarrierWithGroupSync(); 
+
+    //Write results to device memory
+
+    offsetBuffer[2*globalID] = tempSum[2*localID + 1];  
+    
+    if(localID < THREAD_GROUP_SIZE - 1)
+    {
+        offsetBuffer[2*globalID+1] = tempSum[2*localID + 2]; 
+    }
+    else
+    {
+        //offsetBuffer[2*globalID+1] = indirectArgsBuffer[0].indexCountPerInstance;
+        offsetBuffer[2*globalID+1] = indirectArgsBuffer[0].instanceCount;
+        indirectArgsBuffer[0].instanceCount /= 3; //add the final triangle count
+    }
+
+    
+}
+
+
+
+//Apply the final block offsets into the global offset array
+[numthreads(THREAD_GROUP_SIZE, 1, 1)]
+void AddSums(uint globalID : SV_DISPATCHTHREADID, uint groupID : SV_GROUPID) 
+{
+    offsetBuffer[2*(globalID + THREAD_GROUP_SIZE)] += sumsBufferIn[groupID];
+    offsetBuffer[2*(globalID + THREAD_GROUP_SIZE)+1] += sumsBufferIn[groupID];
+}

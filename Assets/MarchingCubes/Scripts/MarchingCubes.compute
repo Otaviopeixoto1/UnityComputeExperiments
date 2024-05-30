@@ -1,0 +1,236 @@
+#pragma kernel ClearCells
+#pragma kernel MarkCells
+#pragma kernel GenerateMesh
+
+
+
+struct Vert 
+{
+    float4 position;
+    float4 normal;
+};
+
+uint totalCells;
+uint chunkSize;
+
+StructuredBuffer<float> densityVolumeIn; // size = total_amount_of_density_cells
+RWStructuredBuffer<uint> cellData; // size = total_amount_of_cells (many will be empty)
+//AppendStructuredBuffer<uint> cellData;
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Either reduce cell data memory usage with append buffer but create another buffer for vert ids (to be used in triangulation)
+// Or KEEP having unused cellData with many unused threads as well (in theory its the same amount of threads that are unused
+// but there might be divergence performance issues)
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+//we append the celldata for building verts and trigs into a buffer. store the cell coord/ind. And also fill vert offset buffer
+//read this append buffer
+//the offset buffer can be used to find where to put the final vert (after scan).
+//// we use the cell coord to index into the offset buffer and the offset to index into the final vertex buffer
+
+//WE Need to MAP INDEX BUFFER ID INTO VERTEX BUFFER ID
+// WE ITERATE OVER ALL POSSIBLE INDEXBUFFER IDs (3 * 5 * total_amount_of_cells), REMOVE THOSE THAT PASS THE COUNT OF TOTAL INDS
+// ON EACH ITERATION, GET FROM THE INDEXBUFFER IDs TO VERTEX ID
+
+//after placing verts, use the celldata + offsets to build trig ind buffer. The triangle order doesnt matter
+
+RWStructuredBuffer<uint2> offsetBuffer; // size = total_amount_of_cells. Used to map all data from vertData into vertexBuffer and indexBuffer
+
+
+//Helpers for the vert and triangle generation pass
+cbuffer MCEdgeLUTs 
+{
+    float4 edge_start[12];
+    float4 edge_dir[12];
+    float4 edge_end[12];
+    float4 edge_axis[12];  // 0 for x edges, 1 for y edges, 2 for z edges.
+};
+
+//SET THESE AS CBUFFERS:
+StructuredBuffer<uint> caseToTriangleNum; // size = 256 (one entry for each cube case)
+StructuredBuffer<int4> triangleTable;   // size = 256*5 = 1280 (256 cases; up to 15 (0/3/6/9/12/15) verts output for each.)
+
+
+//OUTPUTS: 
+// use vertData to build this vertexBuffer
+RWStructuredBuffer<Vert> vertexBuffer; // size = 3 * total_amount_of_cells (max amount of unique vertices)
+
+// use cellData (with triangle data) for this indexBuffer
+RWStructuredBuffer<uint> indexBuffer; // size = 3 * 5 * total_amount_of_cells
+
+
+
+
+
+uint getCellID(uint3 coord) 
+{
+    return (chunkSize * chunkSize * coord.z) + (chunkSize * coord.y) + coord.x;
+}
+uint getCellCornerID(uint3 coord) 
+{
+    return ((chunkSize+1) * (chunkSize+1) * coord.z) + ((chunkSize+1) * coord.y) + coord.x;
+}
+
+// 1) clear offset buffer
+[numthreads(512, 1, 1)]
+void ClearCells (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < totalCells)
+    {
+        offsetBuffer[id.x] = uint2(0,0);
+    }
+    
+}
+
+// 2) initialize offset and cellData buffers
+[numthreads(8, 8, 8)]
+void MarkCells (uint3 id : SV_DispatchThreadID)
+{
+    uint maxComp = max(max(id.x, id.y), id.z);
+    if (maxComp < (chunkSize))
+    {
+        uint cellID = getCellID(id);
+
+        float4 field0123;
+        float4 field4567;
+
+        uint2 cornerOffsets = uint2(1,0);
+
+        field0123.x = densityVolumeIn[getCellCornerID(id + cornerOffsets.yyy)];
+        field0123.y = densityVolumeIn[getCellCornerID(id + cornerOffsets.yxy)];
+        field0123.z = densityVolumeIn[getCellCornerID(id + cornerOffsets.xxy)];
+        field0123.w = densityVolumeIn[getCellCornerID(id + cornerOffsets.xyy)];
+        field4567.x = densityVolumeIn[getCellCornerID(id + cornerOffsets.yyx)];
+        field4567.y = densityVolumeIn[getCellCornerID(id + cornerOffsets.yxx)];
+        field4567.z = densityVolumeIn[getCellCornerID(id + cornerOffsets.xxx)];
+        field4567.w = densityVolumeIn[getCellCornerID(id + cornerOffsets.xyx)];
+
+        uint4 i0123 = (uint4)saturate(field0123*99999); // negative values turn to 0 and positive values to 1
+        uint4 i4567 = (uint4)saturate(field4567*99999);
+        int cubeCase = (i0123.x     ) | (i0123.y << 1) | (i0123.z << 2) | (i0123.w << 3) |
+                        (i4567.x << 4) | (i4567.y << 5) | (i4567.z << 6) | (i4567.w << 7);
+
+
+        // Using Append Buffer:
+        //uint z8_y8_x8_case8 = (id.z << 24) | (id.y << 16) | (id.x <<  8) | (cubeCase); //no need for coords. Just store cube case and data for triangulation (edge flags ?)
+        //cellData.Append(z8_y8_x8_case8); 
+
+        // Using Normal Structured Buffer
+        //the cube corners 0,3,1,4 are the ones that matter (they will be used for testing the three unique verts on the cell)
+        int  bit0 = (cubeCase     ) & 1;
+        int  bit3 = (cubeCase >> 3) & 1;
+        int  bit1 = (cubeCase >> 1) & 1;
+        int  bit4 = (cubeCase >> 4) & 1;
+
+        int3 build_vert_on_edge = abs(int3(bit3,bit1,bit4) - bit0.xxx);
+        uint vertCount = build_vert_on_edge.x + build_vert_on_edge.y + build_vert_on_edge.z;
+
+        uint3 e3_e0_e8_offsets = uint3(2,2,2);
+        e3_e0_e8_offsets.z = (build_vert_on_edge.z != 0) ? (build_vert_on_edge.x + build_vert_on_edge.y) : 2;
+        e3_e0_e8_offsets.y = (build_vert_on_edge.y != 0) ? (build_vert_on_edge.x) : 2;
+        e3_e0_e8_offsets.x = (build_vert_on_edge.x != 0) ? 0 : 2;
+
+        uint triangleCount = caseToTriangleNum[cubeCase] * (maxComp < (chunkSize - 1)); //cells on the edge of the grid must generate verts but no triangles
+
+        cellData[cellID] = (vertCount << 28) | (triangleCount << 24) | (e3_e0_e8_offsets.x << 20) | (e3_e0_e8_offsets.y << 16) | (e3_e0_e8_offsets.z << 12) | (cubeCase); 
+
+        //add the vert and index counts to offset buffers          
+        offsetBuffer[cellID] = uint2(vertCount, 3 * triangleCount);
+    
+    }
+}
+
+// 3) iterate over all cells and generate triangles
+
+void GenerateVertex(uint3 cellPosition, uint edgeNum, int totalOffset)
+{
+    // get the density values at the two ends of this edge of the cell,
+    // then interpolate to find the point (t in 0..1) along the edge 
+    // where the density value hits zero.  
+    float str0 = densityVolumeIn[getCellCornerID(cellPosition + edge_start[edgeNum].xyz)];
+    float str1 = densityVolumeIn[getCellCornerID(cellPosition + edge_end[edgeNum].xyz)];
+
+    float t = saturate(str0/(str0 - str1));  // 'saturate' keeps occasional crazy stray triangle from appearing @ edges
+
+    // reconstruct the interpolated point & place a vertex there.
+    float3 pos_within_cell = edge_start[edgeNum].xyz + t.xxx*edge_dir[edgeNum].xyz;  
+    float3 wsCoord = (float3)cellPosition + pos_within_cell;                                    
+
+    //output.position.xyz  = wsCoord.xyz;
+    vertexBuffer[totalOffset].position.xyzw = float4(wsCoord.xyz,1);
+    //vertexBuffer[totalOffset] = output;
+}
+
+/**/
+void GenerateTriangle(uint3 cellPosition, int3 edgeNums_for_triangle, int totalOffset)
+{
+    int3 edgePosition; 
+    int3 VertexID;
+    uint edgeOffsets[3]; //store this into cell data
+    uint cellID;
+    uint cData;
+    uint edgeOffset;
+    //use the edgePosition to actually sample cell data for the cells containing the edges
+    //in these cells, using the edge_axis, we can sample the actual index of the vert inside the vertbuffer
+    //We can restructure the edge axis to map all eges to the main edges (3,0 and 8)
+
+    //float edge_axis[12];  // 0 for x edges (edge 3), 1 for y edges (edge 0), 2 for z edges (edge 8).
+    //
+
+
+    edgePosition = cellPosition + (int3)edge_start[ edgeNums_for_triangle.x ].xyz;
+    cellID = getCellID(edgePosition);
+    cData = cellData[cellID];
+    edgeOffset = ((cData >> (20 - 4 * (uint)edge_axis[ edgeNums_for_triangle.x ].x)) & 0x0F); 
+    indexBuffer[totalOffset - 0] = (offsetBuffer[cellID].x - 1) - edgeOffset; //(offsetBuffer[cellID].x) -edgeOffset
+
+    edgePosition = cellPosition + (int3)edge_start[ edgeNums_for_triangle.y ].xyz;
+    cellID = getCellID(edgePosition);
+    cData = cellData[cellID];
+    edgeOffset = ((cData >> (20 - 4 * (uint)edge_axis[ edgeNums_for_triangle.y ].x)) & 0x0F); 
+    indexBuffer[totalOffset - 1] = (offsetBuffer[cellID].x - 1) - edgeOffset;
+
+    edgePosition = cellPosition + (int3)edge_start[ edgeNums_for_triangle.z ].xyz;
+    cellID = getCellID(edgePosition);
+    cData = cellData[cellID];
+    edgeOffset = ((cData >> (20 - 4 * (uint)edge_axis[ edgeNums_for_triangle.z ].x)) & 0x0F); 
+    indexBuffer[totalOffset - 2] = (offsetBuffer[cellID].x - 1) - edgeOffset;
+}
+
+[numthreads(8, 8, 8)]
+void GenerateMesh (uint3 id : SV_DispatchThreadID)
+{
+    //remove edge cells as well
+    uint maxComp = max(max(id.x, id.y), id.z);
+    if (maxComp < (chunkSize))
+    {
+        uint cellID = getCellID(id);
+        uint cData = cellData[cellID];
+        uint2 offsets = offsetBuffer[cellID];
+
+        uint cubeCase  = (cData) & 0xFF;
+        uint3 e3_e0_e8_offsets = ((cData.xxx >> uint3(20,16,12)) & 0x0F);
+        uint triCount  = (cData >> 24) & 0x0F;
+        uint vertCount = (cData >> 28) & 0x0F;
+
+
+        uint activeEdges[3];
+        activeEdges[e3_e0_e8_offsets.x] = 3;
+        activeEdges[e3_e0_e8_offsets.y] = 0;
+        activeEdges[e3_e0_e8_offsets.z] = 8;
+        
+
+        for (uint i = 0; i < vertCount; i++)
+        {  
+            GenerateVertex(id, activeEdges[i], (offsets.x - 1) - i);
+        }
+
+
+        for (uint j = 0; j < triCount; j++)
+        {
+            int3 edgeNums_for_triangle = triangleTable[cubeCase * 5 + j].xyz;
+            GenerateTriangle(id, edgeNums_for_triangle, (offsets.y - 1) - 3 * j); 
+        }
+        
+    }
+}

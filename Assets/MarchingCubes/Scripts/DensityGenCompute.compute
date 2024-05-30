@@ -1,0 +1,26 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel GenDensity
+
+//RWTexture2D<float4> Result; //maybe use this
+RWStructuredBuffer<float> densityVolumeOut;
+
+uint totalCells;
+uint chunkSize;
+float scale;
+
+uint getCellCornerID(uint3 coord) 
+{
+    return ((chunkSize+1) * (chunkSize+1) * coord.z) + ((chunkSize+1) * coord.y) + coord.x;
+}
+
+
+[numthreads(8,8,8)]
+void GenDensity (uint3 id : SV_DispatchThreadID)
+{
+    if (max(max(id.x, id.y), id.z) < (chunkSize + 1))
+    {
+        uint cellID = getCellCornerID(id);
+        densityVolumeOut[cellID] = ((float)id.y - 16.0f)/17.0f;
+    }
+    
+}
