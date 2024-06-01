@@ -1,0 +1,38 @@
+#pragma kernel WaveKernel
+#pragma kernel MultiWaveKernel
+#pragma kernel RippleKernel
+#pragma kernel SphereKernel
+#pragma kernel TorusKernel
+
+#include "Assets/GPUGraph/Scripts/FunctionLib.hlsl"
+
+
+RWStructuredBuffer<float3> _Positions;
+
+float _Step;
+float _Time;
+uint _Resolution;
+
+
+float2 GetUV (uint3 id) 
+{
+	return (id.xy + 0.5) * _Step - 1.0;
+}
+
+#define KERNEL_FUNCTION(function) \
+[numthreads(8,8,1)] \
+void function##Kernel (uint3 id : SV_DispatchThreadID) \
+{ \
+    float2 uv = GetUV(id); \
+	if (id.x < _Resolution && id.y < _Resolution) \
+    { \
+		_Positions[id.x + id.y * _Resolution] = function(uv.x, uv.y, _Time); \
+	} \
+}
+
+//define one kernel for each function on the library:
+KERNEL_FUNCTION(Wave)
+KERNEL_FUNCTION(MultiWave)
+KERNEL_FUNCTION(Ripple)
+KERNEL_FUNCTION(Sphere)
+KERNEL_FUNCTION(Torus)
