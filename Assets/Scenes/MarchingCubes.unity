@@ -285,7 +285,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 2a14830dec89e297894c3f2a2f354bcc, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  densityGizmos: 0
+  densityGizmos: 1
   densityGenShader: {fileID: 7200000, guid: 0a935dbaba474a37d9eebbad8dc6438c, type: 3}
   marchingCubesShader: {fileID: 7200000, guid: c730421499a7b3e99a200c350b620f66, type: 3}
   prefixSumScanShader: {fileID: 7200000, guid: bbb96a99bf02f15a9948947cd0cd8e19, type: 3}

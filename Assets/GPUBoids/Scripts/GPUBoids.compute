@@ -79,12 +79,12 @@ uint getGridID(uint3 pos)
     return (gridDimY * gridDimX * pos.z) + (gridDimX * pos.y) + pos.x;
 }
 
-void MergedBehaviours(inout BoidData boid) 
+void CalculateForces(inout BoidData boid) 
 {
     float3 center = 0;
     float3 close = 0;
     float3 avgVel = 0;
-    uint neighbours = 0;
+    uint count = 0;
 
     uint3 gridXYZ = getGridLocation(boid);
     uint cell = getGridID(gridXYZ);
@@ -111,16 +111,16 @@ void MergedBehaviours(inout BoidData boid)
                     }
                     center += other.position;
                     avgVel += other.velocity;
-                    neighbours++;
+                    count++;
                 }
             }
         }
     }
 
-    if (neighbours > 0) 
+    if (count > 0) 
     {
-        center /= neighbours;
-        avgVel /= neighbours;
+        center /= count;
+        avgVel /= count;
 
         boid.velocity += (center - boid.position) * (cohesionFactor * deltaTime);
         boid.velocity += (avgVel - boid.velocity) * (alignmentFactor * deltaTime);
@@ -179,7 +179,7 @@ void UpdateBoids(uint3 id : SV_DispatchThreadID)
     
     BoidData boid = boidsIn[id.x];
     
-    MergedBehaviours(boid);
+    CalculateForces(boid);
     LimitSpeed(boid);
 
     // Update positions
